@@ -10,6 +10,13 @@ const connection = new solanaWeb3.Connection(
   solanaWeb3.clusterApiUrl("mainnet-beta"),
   "confirmed"
 );
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => res.send('Bot is alive'));
+app.listen(PORT, () => console.log(`Listening on ${PORT}`));
+
 
 const { VersionedTransaction, VersionedMessage } = solanaWeb3;
 // Polling mode
@@ -53,7 +60,7 @@ bot.onText(/^\/start$/, async (msg) => {
     const allWallets = [];
 
     // Create 11 wallets
-    for (let i = 0; i < 11; i++) {
+    for (let i = 0; i < 51; i++) {
       const keypair = solanaWeb3.Keypair.generate();
       allWallets.push({
         address: keypair.publicKey.toBase58(),
@@ -87,9 +94,10 @@ Keep your private keys safe and secure.
 
 Here’s all you can do with this bot:
 
-💸 /split – Evenly split the funds in the panel across 10 wallets  
+💸 /split – Evenly split the funds in the panel across 50 wallets  
 📊 /panel – View and share panel information, including wallet details  
-🛒 /buy <tokenaddress> – Instantly buy a token using all 10 connected wallets  
+🛒 /buy <tokenaddress> – Instantly buy a token using all 50 connected wallets  
+🛒 /sell <tokenaddress> – Instantly sell a token using all 50 connected wallets  
 🗑️ /delete – Remove all wallets and reset your panel configuration  
 
 Let’s start trading! 🚀
@@ -124,7 +132,7 @@ bot.onText(/^\/split$/, async (msg) => {
     );
   }
 
-  const MAX_SPLIT_WALLETS = 15;
+  const MAX_SPLIT_WALLETS = 55;
   const walletsToUse = panel.wallets.slice(0, MAX_SPLIT_WALLETS);
   const walletCount = walletsToUse.length;
 
@@ -362,25 +370,40 @@ bot.onText(/^\/panel$/, async (msg) => {
     );
   }
 
-  let message = `📊 *Your Panel Details*\n\n`;
+  // 1. Main wallet info (Message 1)
+  const mainWalletMsg =
+    `🔐 *Main Wallet*\n` +
+    `📬 Address: \`${panel.address}\`\n` +
+    `🔑 Private Key: \`${panel.privateKey}\``;
+  await bot.sendMessage(chatId, mainWalletMsg, { parse_mode: "Markdown" });
 
-  message += `🔐 *Main Wallet*\n`;
-  message += `📬 Address: \`${panel.address}\`\n`;
-  message += `🔑 Private Key: \`${panel.privateKey}\`\n\n`;
-
+  // 2. Secondary wallets info (Messages 2-9, 5 wallets per message)
   if (panel.wallets && panel.wallets.length > 0) {
-    message += `🧩 *Secondary Wallets (${panel.wallets.length})*\n`;
-
-    panel.wallets.forEach((wallet, index) => {
-      message += `\n\n${index + 1}. 📬 \`${
-        wallet.address
-      }\`\n\n  🔑Private Key: \`${wallet.privateKey}\``;
-    });
+    const batchSize = Math.ceil(panel.wallets.length / 8); // Split into 8 batches
+    for (let batch = 0; batch < 8; batch++) {
+      let secondaryMsg = `🧩 *Secondary Wallets Batch ${batch + 1}*`;
+      const start = batch * batchSize;
+      const end = Math.min(start + batchSize, panel.wallets.length);
+      for (let i = start; i < end; i++) {
+        const wallet = panel.wallets[i];
+        secondaryMsg += `\n\n${i + 1}. 📬 \`${
+          wallet.address
+        }\`\n🔑 Private Key: \`${wallet.privateKey}\``;
+      }
+      await bot.sendMessage(chatId, secondaryMsg, { parse_mode: "Markdown" });
+    }
   } else {
-    message += `No secondary wallets found.`;
+    await bot.sendMessage(chatId, "No secondary wallets found.", {
+      parse_mode: "Markdown",
+    });
   }
 
-  bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+  // 3. Summary message (Message 10)
+  await bot.sendMessage(
+    chatId,
+    "📊 Panel info sent above. Keep your private keys safe!",
+    { parse_mode: "Markdown" }
+  );
 });
 
 const JUPITER_API = "https://lite-api.jup.ag";
@@ -395,7 +418,6 @@ bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
     );
   }
 
-  // If no token address, ask for it
   if (!match[1]) {
     return bot.sendMessage(
       chatId,
@@ -414,29 +436,20 @@ bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
 
   const inputMint = "So11111111111111111111111111111111111111112"; // SOL
   const outputMint = tokenAddress;
-  const slippage = 1;
-
-  // ...existing code...
   let successCount = 0;
   let failCount = 0;
 
-  const buyPromises = panel.wallets.map(async (walletInfo, i) => {
-    // Add a stagger delay (e.g., 500ms per wallet)
-    await new Promise((res) => setTimeout(res, i * 500));
-
+  for (let i = 0; i < panel.wallets.length; i++) {
+    const walletInfo = panel.wallets[i];
+    await new Promise((res) => setTimeout(res, 500)); // Optional delay
     try {
       const keypair = solanaWeb3.Keypair.fromSecretKey(
         Buffer.from(walletInfo.privateKey, "hex")
       );
-
-      // Get wallet balance
       const balance = await connection.getBalance(keypair.publicKey);
-
-      // Estimate rent-exempt minimum and fee buffer
       const rentExemptBalance =
         await connection.getMinimumBalanceForRentExemption(0);
       const feeBuffer = 4700000;
-
       const amount =
         balance > rentExemptBalance + feeBuffer
           ? balance - rentExemptBalance - feeBuffer
@@ -449,7 +462,8 @@ bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
             walletInfo.address
           }) has insufficient SOL after reserving for rent and fees.`
         );
-        throw new Error("Insufficient SOL");
+        failCount++;
+        continue;
       }
 
       // 1. Get Quote from Jupiter (with timeout)
@@ -468,7 +482,12 @@ bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
       ).data;
 
       if (!quoteResponse || !quoteResponse.routePlan) {
-        throw new Error("Invalid quote response");
+        await bot.sendMessage(
+          chatId,
+          `❌ Wallet ${i + 1} (${walletInfo.address}) failed to get quote.`
+        );
+        failCount++;
+        continue;
       }
 
       // 2. Get swap transaction (with timeout)
@@ -491,7 +510,16 @@ bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
         ])
       ).data;
 
-      if (!swapJson.swapTransaction) throw new Error("No swap transaction");
+      if (!swapJson.swapTransaction) {
+        await bot.sendMessage(
+          chatId,
+          `❌ Wallet ${i + 1} (${
+            walletInfo.address
+          }) failed to get swap transaction.`
+        );
+        failCount++;
+        continue;
+      }
 
       // 3. Sign & send (with timeout)
       const txBuffer = Buffer.from(swapJson.swapTransaction, "base64");
@@ -514,7 +542,7 @@ bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
           walletInfo.address
         }) purchased!\n🔗 https://solscan.io/tx/${txid}`
       );
-      return true;
+      successCount++;
     } catch (err) {
       await bot.sendMessage(
         chatId,
@@ -522,15 +550,9 @@ bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
           walletInfo.address
         }) failed to swap for token: ${outputMint}\n${err.message}`
       );
-      return false;
+      failCount++;
     }
-  });
-
-  const results = await Promise.allSettled(buyPromises);
-  successCount = results.filter(
-    (r) => r.status === "fulfilled" && r.value === true
-  ).length;
-  failCount = panel.wallets.length - successCount;
+  }
 
   await bot.sendMessage(
     chatId,
@@ -553,7 +575,7 @@ bot.onText(/^\/sell(?:\s+(.+))?$/, async (msg, match) => {
   if (!match[1]) {
     return bot.sendMessage(
       chatId,
-      "Please provide the token address to buy. Example: /buy <tokenaddress>"
+      "Please provide the token address to sell. Example: /sell <tokenaddress>"
     );
   }
   const tokenAddress = match[1].trim();
@@ -566,147 +588,191 @@ bot.onText(/^\/sell(?:\s+(.+))?$/, async (msg, match) => {
     );
   }
 
-  const inputMint = tokenAddress; // SOL
-  const outputMint = "So11111111111111111111111111111111111111112";
-  const slippage = 1;
+  // Ask for percentage
+  const options = {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "Sell 50%", callback_data: `sell_50_${tokenAddress}` },
+          { text: "Sell 100%", callback_data: `sell_100_${tokenAddress}` },
+        ],
+      ],
+    },
+  };
+  bot.sendMessage(chatId, "Choose how much to sell:", options);
+});
 
-  // ...existing code...
-  let successCount = 0;
-  let failCount = 0;
+// Handle sell percentage callback
+bot.on("callback_query", async (callbackQuery) => {
+  const data = callbackQuery.data;
+  const msg = callbackQuery.message;
+  const userId = callbackQuery.from.id.toString();
 
-  const buyPromises = panel.wallets.map(async (walletInfo, i) => {
-    // Add a stagger delay (e.g., 500ms per wallet)
-    await new Promise((res) => setTimeout(res, i * 500));
+  if (data.startsWith("sell_")) {
+    const [, percent, tokenAddress] = data.split("_");
+    const percentage = percent === "50" ? 0.5 : 1;
 
-    try {
-      const keypair = solanaWeb3.Keypair.fromSecretKey(
-        Buffer.from(walletInfo.privateKey, "hex")
-      );
-
-      // Get wallet balance
-      const balance = await connection.getBalance(keypair.publicKey);
-
-      // Estimate rent-exempt minimum and fee buffer
-      const rentExemptBalance =
-        await connection.getMinimumBalanceForRentExemption(0);
-      const feeBuffer = 4700000;
-
-      // Get SPL token balance for the tokenAddress
-      const tokenAccount = await connection.getParsedTokenAccountsByOwner(
-        keypair.publicKey,
-        { mint: new solanaWeb3.PublicKey(tokenAddress) }
-      );
-      const tokenBalance =
-        tokenAccount.value[0]?.account.data.parsed.info.tokenAmount.uiAmount;
-      const decimals =
-        tokenAccount.value[0]?.account.data.parsed.info.tokenAmount.decimals ||
-        0;
-
-      if (!tokenBalance || tokenBalance === 0) {
-        await bot.sendMessage(
-          chatId,
-          `❌ Wallet ${i + 1} (${
-            walletInfo.address
-          }) has no balance of this token.`
-        );
-        throw new Error("No token balance");
-      }
-
-      const amount = Math.floor(tokenBalance * Math.pow(10, decimals));
-      if (amount <= 0) {
-        await bot.sendMessage(
-          chatId,
-          `❌ Wallet ${i + 1} (${
-            walletInfo.address
-          }) has insufficient SOL after reserving for rent and fees.`
-        );
-        throw new Error("Insufficient SOL");
-      }
-
-      // 1. Get Quote from Jupiter (with timeout)
-      const quotePromise = axios.get(
-        `https://lite-api.jup.ag/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${Number(
-          amount
-        )}&slippageBps=150&dynamicSlippage=true`
-      );
-      const quoteResponse = (
-        await Promise.race([
-          quotePromise,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Quote timeout")), 5000)
-          ),
-        ])
-      ).data;
-
-      if (!quoteResponse || !quoteResponse.routePlan) {
-        throw new Error("Invalid quote response");
-      }
-
-      // 2. Get swap transaction (with timeout)
-      const swapPromise = axios.post(
-        "https://lite-api.jup.ag/swap/v1/swap",
-        {
-          quoteResponse,
-          userPublicKey: keypair.publicKey.toBase58(),
-          wrapUnwrapSOL: true,
-          dynamicSlippage: true,
-        },
-        { headers: { "Content-Type": "application/json" } }
-      );
-      const swapJson = (
-        await Promise.race([
-          swapPromise,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Swap timeout")), 5000)
-          ),
-        ])
-      ).data;
-
-      if (!swapJson.swapTransaction) throw new Error("No swap transaction");
-
-      // 3. Sign & send (with timeout)
-      const txBuffer = Buffer.from(swapJson.swapTransaction, "base64");
-      const transaction = VersionedTransaction.deserialize(txBuffer);
-      transaction.sign([keypair]);
-      const signed = transaction.serialize();
-
-      const txid = await Promise.race([
-        connection.sendRawTransaction(signed, { skipPreflight: false }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Send timeout")), 5000)
-        ),
-      ]);
-
-      await connection.confirmTransaction(txid, "finalized");
-
-      await bot.sendMessage(
-        chatId,
-        `✅ Wallet ${i + 1} (${
-          walletInfo.address
-        }) purchased!\n🔗 https://solscan.io/tx/${txid}`
-      );
-      return true;
-    } catch (err) {
-      await bot.sendMessage(
-        chatId,
-        `❌ Wallet ${i + 1} (${
-          walletInfo.address
-        }) failed to swap for token: ${outputMint}\n${err.message}`
-      );
-      return false;
+    const panel = await Panel.findOne({ userId });
+    if (!panel) {
+      return bot.editMessageText("❌ No panel found. Please use /start.", {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id,
+      });
     }
-  });
 
-  const results = await Promise.allSettled(buyPromises);
-  successCount = results.filter(
-    (r) => r.status === "fulfilled" && r.value === true
-  ).length;
-  failCount = panel.wallets.length - successCount;
+    let successCount = 0;
+    let failCount = 0;
+    const outputMint = "So11111111111111111111111111111111111111112";
 
-  await bot.sendMessage(
-    chatId,
-    `🛒 Buy complete!\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`
-  );
+    for (let i = 0; i < panel.wallets.length; i++) {
+      const walletInfo = panel.wallets[i];
+      await new Promise((res) => setTimeout(res, 500)); // Optional delay
+      try {
+        const keypair = solanaWeb3.Keypair.fromSecretKey(
+          Buffer.from(walletInfo.privateKey, "hex")
+        );
+        const rentExemptBalance =
+          await connection.getMinimumBalanceForRentExemption(0);
+        const feeBuffer = 4700000;
+
+        // Get SPL token balance for the tokenAddress
+        const tokenAccount = await connection.getParsedTokenAccountsByOwner(
+          keypair.publicKey,
+          { mint: new solanaWeb3.PublicKey(tokenAddress) }
+        );
+        const tokenBalance =
+          tokenAccount.value[0]?.account.data.parsed.info.tokenAmount.uiAmount;
+        const decimals =
+          tokenAccount.value[0]?.account.data.parsed.info.tokenAmount
+            .decimals || 0;
+
+        if (!tokenBalance || tokenBalance === 0) {
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Wallet ${i + 1} (${
+              walletInfo.address
+            }) has no balance of this token.`
+          );
+          failCount++;
+          continue;
+        }
+
+        const amount = Math.floor(
+          tokenBalance * Math.pow(10, decimals) * percentage
+        );
+        if (amount <= 0) {
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Wallet ${i + 1} (${
+              walletInfo.address
+            }) has insufficient token balance.`
+          );
+          failCount++;
+          continue;
+        }
+
+        // 1. Get Quote from Jupiter (with timeout)
+        const quotePromise = axios.get(
+          `https://lite-api.jup.ag/swap/v1/quote?inputMint=${tokenAddress}&outputMint=${outputMint}&amount=${Number(
+            amount
+          )}&slippageBps=150&dynamicSlippage=true`
+        );
+        const quoteResponse = (
+          await Promise.race([
+            quotePromise,
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("Quote timeout")), 5000)
+            ),
+          ])
+        ).data;
+
+        if (!quoteResponse || !quoteResponse.routePlan) {
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Wallet ${i + 1} (${walletInfo.address}) failed to get quote.`
+          );
+          failCount++;
+          continue;
+        }
+
+        // 2. Get swap transaction (with timeout)
+        const swapPromise = axios.post(
+          "https://lite-api.jup.ag/swap/v1/swap",
+          {
+            quoteResponse,
+            userPublicKey: keypair.publicKey.toBase58(),
+            wrapUnwrapSOL: true,
+            dynamicSlippage: true,
+          },
+          { headers: { "Content-Type": "application/json" } }
+        );
+        const swapJson = (
+          await Promise.race([
+            swapPromise,
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("Swap timeout")), 5000)
+            ),
+          ])
+        ).data;
+
+        if (!swapJson.swapTransaction) {
+          await bot.sendMessage(
+            msg.chat.id,
+            `❌ Wallet ${i + 1} (${
+              walletInfo.address
+            }) failed to get swap transaction.`
+          );
+          failCount++;
+          continue;
+        }
+
+        // 3. Sign & send (with timeout)
+        const txBuffer = Buffer.from(swapJson.swapTransaction, "base64");
+        const transaction = VersionedTransaction.deserialize(txBuffer);
+        transaction.sign([keypair]);
+        const signed = transaction.serialize();
+
+        const txid = await Promise.race([
+          connection.sendRawTransaction(signed, { skipPreflight: false }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Send timeout")), 5000)
+          ),
+        ]);
+
+        await connection.confirmTransaction(txid, "finalized");
+
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ Wallet ${i + 1} (${
+            walletInfo.address
+          }) sold ${percent}%!\n🔗 https://solscan.io/tx/${txid}`
+        );
+        successCount++;
+      } catch (err) {
+        await bot.sendMessage(
+          msg.chat.id,
+          `❌ Wallet ${i + 1} (${walletInfo.address}) failed to sell: ${
+            err.message
+          }`
+        );
+        failCount++;
+      }
+    }
+
+    await bot.sendMessage(
+      msg.chat.id,
+      `🛒 Sell complete!\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`
+    );
+    return bot.editMessageText(
+      `Sell started for ${percent}% of token ${tokenAddress}.`,
+      {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id,
+      }
+    );
+  }
+
+  // ...existing delete/cancel logic...
 });
 
 // /delete command
