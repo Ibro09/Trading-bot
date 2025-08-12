@@ -10,13 +10,12 @@ const connection = new solanaWeb3.Connection(
   solanaWeb3.clusterApiUrl("mainnet-beta"),
   "confirmed"
 );
-const express = require('express');
+const express = require("express");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => res.send('Bot is alive'));
+app.get("/", (req, res) => res.send("Bot is alive"));
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
-
 
 const { VersionedTransaction, VersionedMessage } = solanaWeb3;
 // Polling mode
@@ -60,7 +59,7 @@ bot.onText(/^\/start$/, async (msg) => {
     const allWallets = [];
 
     // Create 11 wallets
-    for (let i = 0; i < 51; i++) {
+    for (let i = 0; i < 26; i++) {
       const keypair = solanaWeb3.Keypair.generate();
       allWallets.push({
         address: keypair.publicKey.toBase58(),
@@ -94,10 +93,10 @@ Keep your private keys safe and secure.
 
 Here’s all you can do with this bot:
 
-💸 /split – Evenly split the funds in the panel across 50 wallets  
+💸 /split – Evenly split the funds in the panel across 25 wallets  
 📊 /panel – View and share panel information, including wallet details  
-🛒 /buy <tokenaddress> – Instantly buy a token using all 50 connected wallets  
-🛒 /sell <tokenaddress> – Instantly sell a token using all 50 connected wallets  
+🛒 /buy <tokenaddress> – Instantly buy a token using all 25 connected wallets  
+🛒 /sell <tokenaddress> – Instantly sell a token using all 25 connected wallets  
 🗑️ /delete – Remove all wallets and reset your panel configuration  
 
 Let’s start trading! 🚀
@@ -118,7 +117,7 @@ bot.onText(/^\/split$/, async (msg) => {
       "❌ No panel found. Please use /start to set up your panel."
     );
   }
- bot.sendMessage( chatId, "🔄 Splitting funds... Please wait...");
+  bot.sendMessage(chatId, "🔄 Splitting funds... Please wait...");
   const mainKeypair = solanaWeb3.Keypair.fromSecretKey(
     Buffer.from(panel.privateKey, "hex")
   );
@@ -132,7 +131,7 @@ bot.onText(/^\/split$/, async (msg) => {
     );
   }
 
-  const MAX_SPLIT_WALLETS = 55;
+  const MAX_SPLIT_WALLETS = 31;
   const walletsToUse = panel.wallets.slice(0, MAX_SPLIT_WALLETS);
   const walletCount = walletsToUse.length;
 
@@ -184,7 +183,9 @@ bot.onText(/^\/split$/, async (msg) => {
   console.log(`Estimated fee per transaction: ${feePerTx} lamports`);
 
   // Estimate rent-exempt balance
-  const rentExemptBalance = await connection.getMinimumBalanceForRentExemption(0);
+  const rentExemptBalance = await connection.getMinimumBalanceForRentExemption(
+    0
+  );
   console.log(`Rent-exempt balance: ${rentExemptBalance} lamports`);
 
   // Check for non-existent wallets
@@ -217,7 +218,9 @@ bot.onText(/^\/split$/, async (msg) => {
     return bot.sendMessage(
       chatId,
       `❌ Available SOL too small to split evenly.\n` +
-        `🪙 Available: ${(distributable / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6)} SOL\n` +
+        `🪙 Available: ${(distributable / solanaWeb3.LAMPORTS_PER_SOL).toFixed(
+          6
+        )} SOL\n` +
         `💡 Please deposit more SOL to cover all wallets.`
     );
   }
@@ -261,7 +264,9 @@ bot.onText(/^\/split$/, async (msg) => {
         `✅ Created account for wallet ${
           validWallets.findIndex((w) => w.address === walletAddress) + 1
         }: ` +
-          `${(rentExemptBalance / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6)} SOL\n` +
+          `${(rentExemptBalance / solanaWeb3.LAMPORTS_PER_SOL).toFixed(
+            6
+          )} SOL\n` +
           `🔗 https://solscan.io/tx/${sig}?cluster=devnet`
       );
     } catch (err) {
@@ -345,7 +350,9 @@ bot.onText(/^\/split$/, async (msg) => {
   await bot.sendMessage(
     chatId,
     `✅ Split complete! ${successfulTxs}/${walletCount} wallets funded.\n` +
-      `Remaining balance: ${(finalBalance / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6)} SOL`
+      `Remaining balance: ${(
+        finalBalance / solanaWeb3.LAMPORTS_PER_SOL
+      ).toFixed(6)} SOL`
   );
 });
 bot.onText(/^\/panel$/, async (msg) => {
