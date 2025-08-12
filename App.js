@@ -118,7 +118,7 @@ bot.onText(/^\/split$/, async (msg) => {
       "❌ No panel found. Please use /start to set up your panel."
     );
   }
-
+ bot.sendMessage( chatId, "🔄 Splitting funds... Please wait...");
   const mainKeypair = solanaWeb3.Keypair.fromSecretKey(
     Buffer.from(panel.privateKey, "hex")
   );
@@ -184,9 +184,7 @@ bot.onText(/^\/split$/, async (msg) => {
   console.log(`Estimated fee per transaction: ${feePerTx} lamports`);
 
   // Estimate rent-exempt balance
-  const rentExemptBalance = await connection.getMinimumBalanceForRentExemption(
-    0
-  );
+  const rentExemptBalance = await connection.getMinimumBalanceForRentExemption(0);
   console.log(`Rent-exempt balance: ${rentExemptBalance} lamports`);
 
   // Check for non-existent wallets
@@ -219,9 +217,7 @@ bot.onText(/^\/split$/, async (msg) => {
     return bot.sendMessage(
       chatId,
       `❌ Available SOL too small to split evenly.\n` +
-        `🪙 Available: ${(distributable / solanaWeb3.LAMPORTS_PER_SOL).toFixed(
-          6
-        )} SOL\n` +
+        `🪙 Available: ${(distributable / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6)} SOL\n` +
         `💡 Please deposit more SOL to cover all wallets.`
     );
   }
@@ -265,9 +261,7 @@ bot.onText(/^\/split$/, async (msg) => {
         `✅ Created account for wallet ${
           validWallets.findIndex((w) => w.address === walletAddress) + 1
         }: ` +
-          `${(rentExemptBalance / solanaWeb3.LAMPORTS_PER_SOL).toFixed(
-            6
-          )} SOL\n` +
+          `${(rentExemptBalance / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6)} SOL\n` +
           `🔗 https://solscan.io/tx/${sig}?cluster=devnet`
       );
     } catch (err) {
@@ -293,7 +287,7 @@ bot.onText(/^\/split$/, async (msg) => {
     }
   }
 
-  // Step 2: Distribute funds to all wallets
+  // Step 2: Distribute funds to all wallets one by one
   for (let i = 0; i < walletCount; i++) {
     const wallet = walletsToUse[i];
     const toPubkey = new solanaWeb3.PublicKey(wallet.address);
@@ -351,12 +345,9 @@ bot.onText(/^\/split$/, async (msg) => {
   await bot.sendMessage(
     chatId,
     `✅ Split complete! ${successfulTxs}/${walletCount} wallets funded.\n` +
-      `Remaining balance: ${(
-        finalBalance / solanaWeb3.LAMPORTS_PER_SOL
-      ).toFixed(6)} SOL`
+      `Remaining balance: ${(finalBalance / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6)} SOL`
   );
 });
-
 bot.onText(/^\/panel$/, async (msg) => {
   const userId = msg.from.id.toString();
   const chatId = msg.chat.id;
