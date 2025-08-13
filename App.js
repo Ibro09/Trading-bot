@@ -18,8 +18,13 @@ const PORT = process.env.PORT || 3000;
 app.get("/", (req, res) => res.send("Bot is alive"));
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
 
-const { VersionedTransaction, VersionedMessage, Transaction, Keypair } =
-  solanaWeb3;
+const {
+  VersionedTransaction,
+  VersionedMessage,
+  Transaction,
+  Keypair,
+  PublicKey,
+} = solanaWeb3;
 // Polling mode
 const bot = new TelegramBot(token, { polling: true });
 
@@ -463,18 +468,38 @@ bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
       }
 
       // 1) Get a quote
-      const quoteResp = await axios.get(
-        `https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=100`
-      );
-      const quoteData = quoteResp.data;
-      if (
-        !quoteData ||
-        (!quoteData.routePlan && !quoteData.data && !quoteData.bestQuote)
-      ) {
-        await bot.sendMessage(
-          chatId,
-          `❌ Wallet ${i + 1} failed to get quote.`
+      try {
+        const quoteResp = await axios.get(
+          `https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=100`
         );
+        const quoteData = quoteResp.data;
+        if (
+          !quoteData ||
+          (!quoteData.routePlan && !quoteData.data && !quoteData.bestQuote)
+        ) {
+          await bot.sendMessage(
+            chatId,
+            `❌ Wallet ${i + 1} failed to get quote.`
+          );
+          continue;
+        }
+      } catch (err) {
+        // Handle Jupiter API errors
+        if (err.response && err.response.status === 400) {
+          await bot.sendMessage(
+            chatId,
+            `❌ Wallet ${i + 1} (${
+              w.address
+            }) Jupiter quote API rejected the request. Likely too little SOL or unsupported token.`
+          );
+        } else {
+          await bot.sendMessage(
+            chatId,
+            `❌ Wallet ${i + 1} (${w.address}) failed to get quote: ${
+              err.message
+            }`
+          );
+        }
         continue;
       }
 
@@ -690,6 +715,93 @@ bot.onText(/^\/sell(?:\s+(.+))?$/, async (msg, match) => {
     },
   };
   bot.sendMessage(chatId, "Choose how much to sell:", options);
+});
+
+bot.onText(/^\/withdraw$/, async (msg) => {
+  const userId = msg.from.id.toString();
+  const chatId = msg.chat.id;
+
+  const panel = await Panel.findOne({ userId });
+  if (!panel) {
+    return bot.sendMessage(
+      chatId,
+      "❌ No panel found. Please use /start to set up your panel."
+    );
+  }
+
+  const mainAddress = panel.address;
+  const mainPubkey = new solanaWeb3.PublicKey(mainAddress);
+
+  // Only withdraw from the first 25 wallets
+  const wallets = panel.wallets.slice(0, 25);
+
+  let successCount = 0;
+  let failCount = 0;
+
+  for (let i = 0; i < wallets.length; i++) {
+    const walletInfo = wallets[i];
+    const keypair = solanaWeb3.Keypair.fromSecretKey(
+      Buffer.from(walletInfo.privateKey, "hex")
+    );
+    const pubkey = keypair.publicKey;
+
+    try {
+      const balance = await connection.getBalance(pubkey);
+      const rentExempt = await connection.getMinimumBalanceForRentExemption(0);
+      const feeBuffer = 15000;
+      const amount =
+        balance > rentExempt + feeBuffer
+          ? balance - rentExempt - feeBuffer
+          : 0;
+
+      if (amount <= 0) {
+        await bot.sendMessage(
+          chatId,
+          `❌ Wallet ${i + 1} (${walletInfo.address}) has insufficient SOL to withdraw.`
+        );
+        failCount++;
+        continue;
+      }
+
+      const tx = new solanaWeb3.Transaction().add(
+        solanaWeb3.SystemProgram.transfer({
+          fromPubkey: pubkey,
+          toPubkey: mainPubkey,
+          lamports: amount,
+        })
+      );
+
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = pubkey;
+
+      tx.sign(keypair);
+
+      const sig = await connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: false,
+      });
+      await connection.confirmTransaction(sig, "finalized");
+
+      await bot.sendMessage(
+        chatId,
+        `✅ Wallet ${i + 1} (${walletInfo.address}) withdrew ${(
+          amount / solanaWeb3.LAMPORTS_PER_SOL
+        ).toFixed(6)} SOL to main wallet.\n🔗 https://solscan.io/tx/${sig}`
+      );
+      successCount++;
+    } catch (err) {
+      await bot.sendMessage(
+        chatId,
+        `❌ Wallet ${i + 1} (${walletInfo.address}) failed to withdraw: ${err.message}`
+      );
+      failCount++;
+    }
+  }
+
+  await bot.sendMessage(
+    chatId,
+    `🏦 Withdraw complete!\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`
+  );
 });
 
 // Handle sell percentage callback
