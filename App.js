@@ -550,9 +550,15 @@ bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
             );
             anyInstructionsAdded = true;
           } else {
-            // Unexpected shape — log and throw to fallback
+            // Unexpected shape — log and skip
             console.warn("Unexpected instruction shape:", inst);
-            throw new Error("UNSUPPORTED_INSTRUCTION_SHAPE");
+            await bot.sendMessage(
+              chatId,
+              `⚠️ Wallet ${
+                i + 1
+              }: Jupiter returned an unsupported instruction shape. Skipping this wallet.`
+            );
+            continue;
           }
         }
 
@@ -715,18 +721,32 @@ bot.on("callback_query", async (query) => {
         const keypair = Keypair.fromSecretKey(Buffer.from(w.privateKey, "hex"));
 
         // get token balance
-        const tokenAccounts = await connection.getTokenAccountsByOwner(keypair.publicKey, { mint: new PublicKey(inputMint) });
+        const tokenAccounts = await connection.getTokenAccountsByOwner(
+          keypair.publicKey,
+          { mint: new PublicKey(inputMint) }
+        );
         if (tokenAccounts.value.length === 0) {
-          await bot.sendMessage(chatId, `❌ Wallet ${i + 1} (${w.address}) has no ${inputMint} tokens.`);
+          await bot.sendMessage(
+            chatId,
+            `❌ Wallet ${i + 1} (${w.address}) has no ${inputMint} tokens.`
+          );
           continue;
         }
 
-        const tokenAccInfo = await connection.getParsedAccountInfo(tokenAccounts.value[0].pubkey);
-        const balanceAmount = tokenAccInfo.value.data.parsed.info.tokenAmount.amount;
-        const amount = Math.floor(Number(balanceAmount) * (parseInt(percent) / 100));
+        const tokenAccInfo = await connection.getParsedAccountInfo(
+          tokenAccounts.value[0].pubkey
+        );
+        const balanceAmount =
+          tokenAccInfo.value.data.parsed.info.tokenAmount.amount;
+        const amount = Math.floor(
+          Number(balanceAmount) * (parseInt(percent) / 100)
+        );
 
         if (amount <= 0) {
-          await bot.sendMessage(chatId, `❌ Wallet ${i + 1} has insufficient token balance.`);
+          await bot.sendMessage(
+            chatId,
+            `❌ Wallet ${i + 1} has insufficient token balance.`
+          );
           continue;
         }
 
@@ -746,11 +766,17 @@ bot.on("callback_query", async (query) => {
               userPublicKey: keypair.publicKey.toBase58(),
               wrapUnwrapSOL: true,
             },
-            { headers: { 'Content-Type': 'application/json' } }
+            { headers: { "Content-Type": "application/json" } }
           );
         } catch (err) {
-          console.error('swap-instructions error', err.response ? err.response.data : err.message);
-          await bot.sendMessage(chatId, `⚠️ Wallet ${i + 1}: swap-instructions failed — fallback later.`);
+          console.error(
+            "swap-instructions error",
+            err.response ? err.response.data : err.message
+          );
+          await bot.sendMessage(
+            chatId,
+            `⚠️ Wallet ${i + 1}: swap-instructions failed — fallback later.`
+          );
           continue;
         }
 
@@ -758,48 +784,83 @@ bot.on("callback_query", async (query) => {
 
         const instData = instResp.data;
         let instructionsArray = null;
-        if (Array.isArray(instData.swapInstruction)) instructionsArray = instData.swapInstruction;
-        else if (Array.isArray(instData.swapInstructions)) instructionsArray = instData.swapInstructions;
-        else if (instData.swapInstruction && !Array.isArray(instData.swapInstruction)) instructionsArray = [instData.swapInstruction];
+        if (Array.isArray(instData.swapInstruction))
+          instructionsArray = instData.swapInstruction;
+        else if (Array.isArray(instData.swapInstructions))
+          instructionsArray = instData.swapInstructions;
+        else if (
+          instData.swapInstruction &&
+          !Array.isArray(instData.swapInstruction)
+        )
+          instructionsArray = [instData.swapInstruction];
 
         if (instructionsArray) {
           for (const inst of instructionsArray) {
             if (inst.programId && inst.keys) {
-              const keys = inst.keys.map(k => ({
-                pubkey: new PublicKey(k.pubkey || k.pubkeyString || k.pubkeyAddress || k),
+              const keys = inst.keys.map((k) => ({
+                pubkey: new PublicKey(
+                  k.pubkey || k.pubkeyString || k.pubkeyAddress || k
+                ),
                 isSigner: !!k.isSigner,
                 isWritable: !!k.isWritable,
               }));
-              const dataBuf = inst.data ? Buffer.from(inst.data, 'base64') : Buffer.alloc(0);
-              transaction.add(new TransactionInstruction({
-                keys,
-                programId: new PublicKey(inst.programId),
-                data: dataBuf,
-              }));
+              const dataBuf = inst.data
+                ? Buffer.from(inst.data, "base64")
+                : Buffer.alloc(0);
+              transaction.add(
+                new TransactionInstruction({
+                  keys,
+                  programId: new PublicKey(inst.programId),
+                  data: dataBuf,
+                })
+              );
               anyInstructionsAdded = true;
             } else {
-              console.warn('Unexpected instruction shape:', inst);
-              throw new Error('UNSUPPORTED_INSTRUCTION_SHAPE');
+              // Unexpected shape — log and skip
+              console.warn("Unexpected instruction shape:", inst);
+              await bot.sendMessage(
+                chatId,
+                `⚠️ Wallet ${
+                  i + 1
+                }: Jupiter returned an unsupported instruction shape. Skipping this wallet.`
+              );
+              continue;
             }
           }
           signers.push(keypair);
         } else if (instData.swapTransaction) {
-          console.warn('swapTransaction returned for wallet', w.address);
-          await bot.sendMessage(chatId, `⚠️ Wallet ${i + 1}: Jupiter returned a full txn — will fallback.`);
+          console.warn("swapTransaction returned for wallet", w.address);
+          await bot.sendMessage(
+            chatId,
+            `⚠️ Wallet ${i + 1}: Jupiter returned a full txn — will fallback.`
+          );
           continue;
         } else {
-          console.warn('No usable instructions returned for wallet', w.address, instData);
-          await bot.sendMessage(chatId, `⚠️ Wallet ${i + 1}: no usable instructions.`);
+          console.warn(
+            "No usable instructions returned for wallet",
+            w.address,
+            instData
+          );
+          await bot.sendMessage(
+            chatId,
+            `⚠️ Wallet ${i + 1}: no usable instructions.`
+          );
           continue;
         }
       } catch (err) {
-        console.error('sell wallet loop error', err);
-        await bot.sendMessage(chatId, `❌ Wallet ${i + 1} failed: ${err.message}`);
+        console.error("sell wallet loop error", err);
+        await bot.sendMessage(
+          chatId,
+          `❌ Wallet ${i + 1} failed: ${err.message}`
+        );
       }
     }
 
     if (!anyInstructionsAdded) {
-      return bot.sendMessage(chatId, "❌ No sell instructions collected for batching.");
+      return bot.sendMessage(
+        chatId,
+        "❌ No sell instructions collected for batching."
+      );
     }
 
     transaction.feePayer = signers[0].publicKey;
@@ -808,16 +869,24 @@ bot.on("callback_query", async (query) => {
 
     try {
       transaction.sign(...signers);
-      const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false });
+      const txid = await connection.sendRawTransaction(
+        transaction.serialize(),
+        { skipPreflight: false }
+      );
       await connection.confirmTransaction(txid, "finalized");
-      await bot.sendMessage(chatId, `✅ Batched sell sent!\n🔗 https://solscan.io/tx/${txid}`);
+      await bot.sendMessage(
+        chatId,
+        `✅ Batched sell sent!\n🔗 https://solscan.io/tx/${txid}`
+      );
     } catch (err) {
-      console.error('Batched sell error:', err);
-      await bot.sendMessage(chatId, `❌ Failed to send batched sell: ${err.message}`);
+      console.error("Batched sell error:", err);
+      await bot.sendMessage(
+        chatId,
+        `❌ Failed to send batched sell: ${err.message}`
+      );
     }
   }
 });
-
 
 // /delete command
 bot.onText(/^\/delete$/, (msg) => {
