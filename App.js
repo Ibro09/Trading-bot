@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const bs58 = require("bs58");
 const axios = require("axios");
 // Replace with your real Telegram bot token
-const token = "7844180208:AAG0bIWlehBfyahpDpu3VvANwse43qhaLkc";
+const token = process.env.BOT_TOKEN;
 require("dotenv").config();
 const solanaWeb3 = require("@solana/web3.js");
 const connection = new solanaWeb3.Connection(
@@ -26,7 +26,7 @@ const {
   PublicKey,
 } = solanaWeb3;
 // Polling mode
-const bot = new TelegramBot(token, { polling: true });
+const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
 // Replace with your MongoDB URI
 const MONGODB_URI = process.env.MONGODB_URI;
