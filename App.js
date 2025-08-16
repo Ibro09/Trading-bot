@@ -24,7 +24,9 @@ const {
   Transaction,
   Keypair,
   PublicKey,
+  Connection,
 } = solanaWeb3;
+
 // Polling mode
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
@@ -111,6 +113,7 @@ Let’s start trading! 🚀
 
   bot.sendMessage(msg.chat.id, helpMessage, { parse_mode: "Markdown" });
 });
+
 bot.onText(/^\/split$/, async (msg) => {
   const userId = msg.from.id.toString();
   const chatId = msg.chat.id;
@@ -302,7 +305,7 @@ bot.onText(/^\/split$/, async (msg) => {
       } else {
         await bot.sendMessage(
           chatId,
-          `✅ First fallback tx confirmed: https://solscan.io/tx/${r1.sig}?cluster=devnet`
+          `✅ First fallback tx confirmed: https://solscan.io/tx/${r1.sig}`
         );
       }
 
@@ -317,7 +320,7 @@ bot.onText(/^\/split$/, async (msg) => {
       } else {
         await bot.sendMessage(
           chatId,
-          `✅ Second fallback tx confirmed: https://solscan.io/tx/${r2.sig}?cluster=devnet`
+          `✅ Second fallback tx confirmed: https://solscan.io/tx/${r2.sig}`
         );
       }
 
@@ -335,7 +338,7 @@ bot.onText(/^\/split$/, async (msg) => {
     if (res.success) {
       await bot.sendMessage(
         chatId,
-        `✅ Split complete!\n🔗 https://solscan.io/tx/${res.sig}?cluster=devnet`
+        `✅ Split complete!\n🔗 https://solscan.io/tx/${res.sig}`
       );
       const finalBalance = await connection.getBalance(mainPublicKey);
       return bot.sendMessage(
@@ -411,273 +414,10 @@ bot.onText(/^\/panel$/, async (msg) => {
   );
 });
 
-const JUPITER_API = "https://lite-api.jup.ag";
-
-bot.onText(/^\/buy(?:\s+(.+))?$/, async (msg, match) => {
-  const chatId = msg.chat.id;
+bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
   const userId = msg.from.id.toString();
-  const panel = await Panel.findOne({ userId });
-
-  if (!panel)
-    return bot.sendMessage(
-      chatId,
-      "❌ No panel found. Please use /start to set up your panel."
-    );
-  if (!match[1])
-    return bot.sendMessage(
-      chatId,
-      "Please provide the token address to buy. Example: /buy <tokenaddress>"
-    );
-
-  const tokenAddress = match[1].trim();
-  try {
-    new solanaWeb3.PublicKey(tokenAddress);
-  } catch {
-    return bot.sendMessage(chatId, "❌ Invalid token address.");
-  }
-
-  const inputMint = "So11111111111111111111111111111111111111112"; // SOL
-  const outputMint = tokenAddress;
-  const wallets = panel.wallets.slice(0, 25); // limit to 25
-
-  // Build a transaction and collect signers
-  let transaction = new Transaction();
-  const signers = []; // keypairs that must sign (all wallets that will swap)
-  let anyInstructionsAdded = false;
-
-  // Get a fresh blockhash (we'll refresh before final send)
-  let blockhashInfo = await connection.getLatestBlockhash("confirmed");
-  transaction.recentBlockhash = blockhashInfo.blockhash;
-
-  for (let i = 0; i < wallets.length; i++) {
-    const w = wallets[i];
-    try {
-      const keypair = Keypair.fromSecretKey(Buffer.from(w.privateKey, "hex"));
-      const balance = await connection.getBalance(keypair.publicKey);
-      const rentExempt = await connection.getMinimumBalanceForRentExemption(0);
-      const feeBuffer = 5000;
-      const amount =
-        balance > rentExempt + feeBuffer ? balance - rentExempt - feeBuffer : 0;
-
-      if (amount <= 0) {
-        await bot.sendMessage(
-          chatId,
-          `❌ Wallet ${i + 1} (${w.address}) has insufficient SOL.`
-        );
-        continue;
-      }
-
-      // 1) Get a quote
-      try {
-        const quoteResp = await axios.get(
-          `https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=100`
-        );
-        const quoteData = quoteResp.data;
-        if (
-          !quoteData ||
-          (!quoteData.routePlan && !quoteData.data && !quoteData.bestQuote)
-        ) {
-          await bot.sendMessage(
-            chatId,
-            `❌ Wallet ${i + 1} failed to get quote.`
-          );
-          continue;
-        }
-      } catch (err) {
-        // Handle Jupiter API errors
-        if (err.response && err.response.status === 400) {
-          await bot.sendMessage(
-            chatId,
-            `❌ Wallet ${i + 1} (${
-              w.address
-            }) Jupiter quote API rejected the request. Likely too little SOL or unsupported token.`
-          );
-        } else {
-          await bot.sendMessage(
-            chatId,
-            `❌ Wallet ${i + 1} (${w.address}) failed to get quote: ${
-              err.message
-            }`
-          );
-        }
-        continue;
-      }
-
-      // 2) Ask for swap-instructions (preferred) - endpoint may vary, adjust if your Jupiter version differs
-      let instResp;
-      try {
-        instResp = await axios.post(
-          `https://quote-api.jup.ag/v6/swap-instructions`,
-          {
-            quoteResponse: quoteData,
-            userPublicKey: keypair.publicKey.toBase58(),
-            wrapUnwrapSOL: true,
-          },
-          { headers: { "Content-Type": "application/json" } }
-        );
-      } catch (err) {
-        // If swap-instructions endpoint failed, log and fallback to per-wallet swap later
-        console.error(
-          "swap-instructions error",
-          err.response ? err.response.data : err.message
-        );
-        await bot.sendMessage(
-          chatId,
-          `⚠️ Wallet ${
-            i + 1
-          }: swap-instructions failed — will fallback to per-wallet sending later.`
-        );
-        continue;
-      }
-
-      // -- DEBUG: inspect the returned shape when things fail --
-      // If you run into problems, uncomment the next line to see exactly what Jupiter returned
-      // console.log("Jupiter swap-instructions response:", JSON.stringify(instResp.data, null, 2));
-
-      const instData = instResp.data;
-
-      // Cases:
-      // - instData.swapInstruction may be an array of instruction objects
-      // - instData.swapInstructions (plural)
-      // - instData.swapTransaction (base64): can't batch easily (it's a full txn), so skip here
-      let instructionsArray = null;
-      if (Array.isArray(instData.swapInstruction))
-        instructionsArray = instData.swapInstruction;
-      else if (Array.isArray(instData.swapInstructions))
-        instructionsArray = instData.swapInstructions;
-      else if (
-        instData.swapInstruction &&
-        !Array.isArray(instData.swapInstruction)
-      )
-        instructionsArray = [instData.swapInstruction];
-
-      if (instructionsArray) {
-        // Add each instruction (robustly handle object shapes)
-        for (const inst of instructionsArray) {
-          // inst might be { programId, keys, data } or similar; build TransactionInstruction
-          if (inst.programId && inst.keys) {
-            const keys = inst.keys.map((k) => ({
-              pubkey: new PublicKey(
-                k.pubkey || k.pubkeyString || k.pubkeyAddress || k
-              ),
-              isSigner: !!k.isSigner,
-              isWritable: !!k.isWritable,
-            }));
-            const data = inst.data
-              ? Buffer.from(inst.data, "base64")
-              : Buffer.alloc(0);
-            transaction.add(
-              new TransactionInstruction({
-                keys,
-                programId: new PublicKey(inst.programId),
-                data,
-              })
-            );
-            anyInstructionsAdded = true;
-          } else {
-            // Unexpected shape — log and skip
-            console.warn("Unexpected instruction shape:", inst);
-            await bot.sendMessage(
-              chatId,
-              `⚠️ Wallet ${
-                i + 1
-              }: Jupiter returned an unsupported instruction shape. Skipping this wallet.`
-            );
-            continue;
-          }
-        }
-
-        // keep this wallet's keypair to sign later
-        signers.push(keypair);
-      } else if (instData.swapTransaction) {
-        // Jupiter returned a full transaction (base64). You cannot merge pre-built serialized transactions easily.
-        // Best option: fall back to per-wallet send for this wallet.
-        console.warn("swapTransaction returned for wallet", w.address);
-        await bot.sendMessage(
-          chatId,
-          `⚠️ Wallet ${
-            i + 1
-          }: Jupiter returned a full transaction for this quote — cannot batch. Will fallback to per-wallet send for this wallet.`
-        );
-        continue;
-      } else {
-        // Nothing usable returned
-        console.warn(
-          "No usable instructions returned for wallet",
-          w.address,
-          instData
-        );
-        await bot.sendMessage(
-          chatId,
-          `⚠️ Wallet ${
-            i + 1
-          }: no usable instructions returned (see console). Will fallback later.`
-        );
-        continue;
-      }
-    } catch (err) {
-      console.error("wallet loop error", err);
-      await bot.sendMessage(
-        chatId,
-        `❌ Wallet ${i + 1} failed: ${err.message || String(err)}`
-      );
-      continue;
-    }
-  } // end wallets loop
-
-  // If we added no instructions suitable for batching, fallback to original per-wallet approach
-  if (!anyInstructionsAdded) {
-    return bot.sendMessage(
-      chatId,
-      "❌ No instructions collected for batching. Falling back to per-wallet swaps (not implemented in this branch)."
-    );
-  }
-
-  // Set fee payer (must be one of the signers)
-  transaction.feePayer = signers[0].publicKey;
-
-  // Refresh blockhash right before signing and sending
-  blockhashInfo = await connection.getLatestBlockhash("confirmed");
-  transaction.recentBlockhash = blockhashInfo.blockhash;
-
-  try {
-    // Sign with all wallet keypairs that contributed instructions
-    transaction.sign(...signers);
-
-    // Send the batched transaction
-    const txid = await connection.sendRawTransaction(transaction.serialize(), {
-      skipPreflight: false,
-    });
-    await connection.confirmTransaction(txid, "finalized");
-    await bot.sendMessage(
-      chatId,
-      `✅ Batched buys sent in one transaction!\n🔗 https://solscan.io/tx/${txid}`
-    );
-  } catch (err) {
-    console.error("Batched transaction error:", err);
-
-    // If tx too large or other irreversible issue, inform user and optionally fallback
-    const msg = err && err.message ? err.message : String(err);
-    if (
-      msg.toLowerCase().includes("transaction too large") ||
-      msg.toLowerCase().includes("exceeds maximum")
-    ) {
-      await bot.sendMessage(
-        chatId,
-        `❌ Batched transaction too large. You must fallback to smaller batches or per-wallet transactions.`
-      );
-    } else {
-      await bot.sendMessage(
-        chatId,
-        `❌ Failed to send batched transaction: ${msg}`
-      );
-    }
-  }
-});
-
-bot.onText(/^\/sell(?:\s+(.+))?$/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const userId = msg.from.id.toString();
+
   const panel = await Panel.findOne({ userId });
   if (!panel) {
     return bot.sendMessage(
@@ -686,14 +426,177 @@ bot.onText(/^\/sell(?:\s+(.+))?$/, async (msg, match) => {
     );
   }
 
-  // If no token address, ask for it
-  if (!match[1]) {
-    return bot.sendMessage(
+  const {
+    Connection,
+    Keypair,
+    VersionedTransaction,
+  } = require("@solana/web3.js");
+  const axios = require("axios");
+
+  const RPC_URL = "https://api.mainnet-beta.solana.com";
+  const connection = new Connection(RPC_URL, "confirmed");
+
+  const inputMint = "So11111111111111111111111111111111111111112"; // wSOL
+  const outputMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; // USDC
+  const slippageBps = 50;
+
+  const privateKeysHex = [
+    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
+    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
+    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
+    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
+    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
+    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
+    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
+    "6fb571a0b27ed5d73ac60d417fc1d503f50564a38d93bc2879605a1a70716fc5b87c1b3a2aa203da3176fc45c0a55c31f2b9563516b8616feede6bc5514c057d",
+    "6fb571a0b27ed5d73ac60d417fc1d503f50564a38d93bc2879605a1a70716fc5b87c1b3a2aa203da3176fc45c0a55c31f2b9563516b8616feede6bc5514c057d",
+  ];
+
+  function hexToKeypair(hex) {
+    return Keypair.fromSecretKey(Uint8Array.from(Buffer.from(hex, "hex")));
+  }
+  const wallets = privateKeysHex.map(hexToKeypair);
+
+  async function getBalanceLamports(pubkey) {
+    return await connection.getBalance(pubkey);
+  }
+
+  async function swapForWallet(wallet, quote) {
+    try {
+      const swapPayload = {
+        userPublicKey: wallet.publicKey.toBase58(),
+        quoteResponse: quote,
+        prioritizationFeeLamports: {
+          priorityLevelWithMaxLamports: {
+            maxLamports: 10000000,
+            priorityLevel: "veryHigh",
+          },
+        },
+        dynamicComputeUnitLimit: true,
+      };
+
+      const { data: swapResponse } = await axios.post(
+        "https://lite-api.jup.ag/swap/v1/swap",
+        swapPayload,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+        }
+      );
+
+      const txBuffer = Buffer.from(swapResponse.swapTransaction, "base64");
+      const transaction = VersionedTransaction.deserialize(txBuffer);
+
+      transaction.sign([wallet]);
+
+      const sig = await connection.sendTransaction(transaction);
+      return { success: true, sig };
+    } catch (err) {
+      return {
+        success: false,
+        error: err.response?.data?.error || err.message || "Unknown error",
+      };
+    }
+  }
+  const LAMPORTS_PER_SOL = 1_000_000_000;
+
+  async function main() {
+    const firstWalletBalance = await getBalanceLamports(wallets[0].publicKey);
+    // const firstWalletBalance = Math.floor(0.005196678 * LAMPORTS_PER_SOL);
+    if (firstWalletBalance <= 0) {
+      await bot.sendMessage(
+        chatId,
+        "❌ First wallet has no balance. Cannot proceed."
+      );
+      return;
+    }
+
+    const swapAmount = Math.floor(firstWalletBalance * 0.85);
+
+    let quote;
+    try {
+      const { data } = await axios.get(
+        "https://lite-api.jup.ag/swap/v1/quote",
+        {
+          params: { inputMint, outputMint, amount: swapAmount, slippageBps },
+          headers: { Accept: "application/json" },
+        }
+      );
+      quote = data;
+    } catch (err) {
+      await bot.sendMessage(
+        chatId,
+        `❌ Failed to get swap quote: ${err.message}`
+      );
+      return;
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    // Process in batches of 5
+    for (let i = 0; i < wallets.length; i += 5) {
+      const batch = wallets.slice(i, i + 5);
+      await bot.sendMessage(
+        chatId,
+        `🚀 Sending batch ${i / 5 + 1} of ${Math.ceil(wallets.length / 5)}...`
+      );
+
+      const results = await Promise.all(
+        batch.map((wallet) => swapForWallet(wallet, quote))
+      );
+
+      for (let j = 0; j < results.length; j++) {
+        const res = results[j];
+        const wallet = batch[j];
+
+        if (res.success) {
+          successCount++;
+          await bot.sendMessage(
+            chatId,
+            `✅ ${wallet.publicKey.toBase58()} swapped: https://solscan.io/tx/${
+              res.sig
+            }`
+          );
+        } else {
+          failCount++;
+          await bot.sendMessage(
+            chatId,
+            `❌ ${wallet.publicKey.toBase58()} failed: ${res.error}`
+          );
+        }
+      }
+
+      // Delay to avoid rate limits
+      await new Promise((res) => setTimeout(res, 500));
+    }
+
+    await bot.sendMessage(
       chatId,
-      "Please provide the token address to sell. Example: /sell <tokenaddress>"
+      `🛒 Buy complete!\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`
     );
   }
-  const tokenAddress = match[1].trim();
+
+  main().catch(async (err) => {
+    console.error(err);
+    await bot.sendMessage(chatId, `❌ Unexpected error: ${err.message}`);
+  });
+});
+
+bot.onText(/^\/sell(?:\s+(.+))?$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const tokenAddress = match[1] ? match[1].trim() : null;
+
+  if (!tokenAddress) {
+    return bot.sendMessage(
+      chatId,
+      "❌ Please provide the token address to sell. Example:\n`/sell <tokenaddress>`",
+      { parse_mode: "Markdown" }
+    );
+  }
+
   try {
     new solanaWeb3.PublicKey(tokenAddress);
   } catch (err) {
@@ -702,19 +605,14 @@ bot.onText(/^\/sell(?:\s+(.+))?$/, async (msg, match) => {
       "❌ Invalid token address. Please provide a valid Solana token address."
     );
   }
-
-  // Ask for percentage
-  const options = {
+  bot.sendMessage(chatId, `How much of this token do you want to sell?`, {
     reply_markup: {
       inline_keyboard: [
-        [
-          { text: "Sell 50%", callback_data: `sell_50_${tokenAddress}` },
-          { text: "Sell 100%", callback_data: `sell_100_${tokenAddress}` },
-        ],
+        [{ text: "50%", callback_data: `sell_50|${tokenAddress}` }],
+        [{ text: "100%", callback_data: `sell_100|${tokenAddress}` }],
       ],
     },
-  };
-  bot.sendMessage(chatId, "Choose how much to sell:", options);
+  });
 });
 
 bot.onText(/^\/withdraw$/, async (msg) => {
@@ -728,12 +626,16 @@ bot.onText(/^\/withdraw$/, async (msg) => {
       "❌ No panel found. Please use /start to set up your panel."
     );
   }
-
+  await bot.sendMessage(chatId, "🔄 Processing withdrawals... Please wait...");
   const mainAddress = panel.address;
   const mainPubkey = new solanaWeb3.PublicKey(mainAddress);
 
   // Only withdraw from the first 25 wallets
   const wallets = panel.wallets.slice(0, 25);
+  const privateKeysHex = [
+    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
+    "6fb571a0b27ed5d73ac60d417fc1d503f50564a38d93bc2879605a1a70716fc5b87c1b3a2aa203da3176fc45c0a55c31f2b9563516b8616feede6bc5514c057d",
+  ];
 
   let successCount = 0;
   let failCount = 0;
@@ -743,21 +645,23 @@ bot.onText(/^\/withdraw$/, async (msg) => {
     const keypair = solanaWeb3.Keypair.fromSecretKey(
       Buffer.from(walletInfo.privateKey, "hex")
     );
+    // const keypair = solanaWeb3.Keypair.fromSecretKey(
+    //   Buffer.from(walletInfo, "hex")
+    // );
     const pubkey = keypair.publicKey;
 
     try {
       const balance = await connection.getBalance(pubkey);
       const rentExempt = await connection.getMinimumBalanceForRentExemption(0);
       const feeBuffer = 15000;
-      const amount =
-        balance > rentExempt + feeBuffer
-          ? balance - rentExempt - feeBuffer
-          : 0;
+      const amount = Math.floor(balance * 0.8) - rentExempt - feeBuffer;
 
       if (amount <= 0) {
         await bot.sendMessage(
           chatId,
-          `❌ Wallet ${i + 1} (${walletInfo.address}) has insufficient SOL to withdraw.`
+          `❌ Wallet ${i + 1} (${
+            walletInfo.address
+          }) has insufficient SOL to withdraw.`
         );
         failCount++;
         continue;
@@ -792,7 +696,9 @@ bot.onText(/^\/withdraw$/, async (msg) => {
     } catch (err) {
       await bot.sendMessage(
         chatId,
-        `❌ Wallet ${i + 1} (${walletInfo.address}) failed to withdraw: ${err.message}`
+        `❌ Wallet ${i + 1} (${walletInfo.address}) failed to withdraw: ${
+          err.message
+        }`
       );
       failCount++;
     }
@@ -802,202 +708,6 @@ bot.onText(/^\/withdraw$/, async (msg) => {
     chatId,
     `🏦 Withdraw complete!\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`
   );
-});
-
-// Handle sell percentage callback
-bot.on("callback_query", async (query) => {
-  const data = query.data;
-  const chatId = query.message.chat.id;
-  const userId = query.from.id.toString();
-
-  if (data.startsWith("sell_")) {
-    const [, percent, tokenAddress] = data.split("_");
-    const panel = await Panel.findOne({ userId });
-
-    if (!panel) return bot.sendMessage(chatId, "❌ No panel found.");
-
-    const inputMint = tokenAddress; // selling this token
-    const outputMint = "So11111111111111111111111111111111111111112"; // SOL
-    const wallets = panel.wallets.slice(0, 25);
-
-    let transaction = new Transaction();
-    const signers = [];
-    let anyInstructionsAdded = false;
-
-    let blockhashInfo = await connection.getLatestBlockhash("confirmed");
-    transaction.recentBlockhash = blockhashInfo.blockhash;
-
-    for (let i = 0; i < wallets.length; i++) {
-      try {
-        const w = wallets[i];
-        const keypair = Keypair.fromSecretKey(Buffer.from(w.privateKey, "hex"));
-
-        // get token balance
-        const tokenAccounts = await connection.getTokenAccountsByOwner(
-          keypair.publicKey,
-          { mint: new PublicKey(inputMint) }
-        );
-        if (tokenAccounts.value.length === 0) {
-          await bot.sendMessage(
-            chatId,
-            `❌ Wallet ${i + 1} (${w.address}) has no ${inputMint} tokens.`
-          );
-          continue;
-        }
-
-        const tokenAccInfo = await connection.getParsedAccountInfo(
-          tokenAccounts.value[0].pubkey
-        );
-        const balanceAmount =
-          tokenAccInfo.value.data.parsed.info.tokenAmount.amount;
-        const amount = Math.floor(
-          Number(balanceAmount) * (parseInt(percent) / 100)
-        );
-
-        if (amount <= 0) {
-          await bot.sendMessage(
-            chatId,
-            `❌ Wallet ${i + 1} has insufficient token balance.`
-          );
-          continue;
-        }
-
-        // Get quote
-        const quoteResp = await axios.get(
-          `https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=100`
-        );
-        const quoteData = quoteResp.data;
-
-        // Get swap instructions
-        let instResp;
-        try {
-          instResp = await axios.post(
-            `https://quote-api.jup.ag/v6/swap-instructions`,
-            {
-              quoteResponse: quoteData,
-              userPublicKey: keypair.publicKey.toBase58(),
-              wrapUnwrapSOL: true,
-            },
-            { headers: { "Content-Type": "application/json" } }
-          );
-        } catch (err) {
-          console.error(
-            "swap-instructions error",
-            err.response ? err.response.data : err.message
-          );
-          await bot.sendMessage(
-            chatId,
-            `⚠️ Wallet ${i + 1}: swap-instructions failed — fallback later.`
-          );
-          continue;
-        }
-
-        // console.log("SELL swap-instructions response:", JSON.stringify(instResp.data, null, 2));
-
-        const instData = instResp.data;
-        let instructionsArray = null;
-        if (Array.isArray(instData.swapInstruction))
-          instructionsArray = instData.swapInstruction;
-        else if (Array.isArray(instData.swapInstructions))
-          instructionsArray = instData.swapInstructions;
-        else if (
-          instData.swapInstruction &&
-          !Array.isArray(instData.swapInstruction)
-        )
-          instructionsArray = [instData.swapInstruction];
-
-        if (instructionsArray) {
-          for (const inst of instructionsArray) {
-            if (inst.programId && inst.keys) {
-              const keys = inst.keys.map((k) => ({
-                pubkey: new PublicKey(
-                  k.pubkey || k.pubkeyString || k.pubkeyAddress || k
-                ),
-                isSigner: !!k.isSigner,
-                isWritable: !!k.isWritable,
-              }));
-              const dataBuf = inst.data
-                ? Buffer.from(inst.data, "base64")
-                : Buffer.alloc(0);
-              transaction.add(
-                new TransactionInstruction({
-                  keys,
-                  programId: new PublicKey(inst.programId),
-                  data: dataBuf,
-                })
-              );
-              anyInstructionsAdded = true;
-            } else {
-              // Unexpected shape — log and skip
-              console.warn("Unexpected instruction shape:", inst);
-              await bot.sendMessage(
-                chatId,
-                `⚠️ Wallet ${
-                  i + 1
-                }: Jupiter returned an unsupported instruction shape. Skipping this wallet.`
-              );
-              continue;
-            }
-          }
-          signers.push(keypair);
-        } else if (instData.swapTransaction) {
-          console.warn("swapTransaction returned for wallet", w.address);
-          await bot.sendMessage(
-            chatId,
-            `⚠️ Wallet ${i + 1}: Jupiter returned a full txn — will fallback.`
-          );
-          continue;
-        } else {
-          console.warn(
-            "No usable instructions returned for wallet",
-            w.address,
-            instData
-          );
-          await bot.sendMessage(
-            chatId,
-            `⚠️ Wallet ${i + 1}: no usable instructions.`
-          );
-          continue;
-        }
-      } catch (err) {
-        console.error("sell wallet loop error", err);
-        await bot.sendMessage(
-          chatId,
-          `❌ Wallet ${i + 1} failed: ${err.message}`
-        );
-      }
-    }
-
-    if (!anyInstructionsAdded) {
-      return bot.sendMessage(
-        chatId,
-        "❌ No sell instructions collected for batching."
-      );
-    }
-
-    transaction.feePayer = signers[0].publicKey;
-    blockhashInfo = await connection.getLatestBlockhash("confirmed");
-    transaction.recentBlockhash = blockhashInfo.blockhash;
-
-    try {
-      transaction.sign(...signers);
-      const txid = await connection.sendRawTransaction(
-        transaction.serialize(),
-        { skipPreflight: false }
-      );
-      await connection.confirmTransaction(txid, "finalized");
-      await bot.sendMessage(
-        chatId,
-        `✅ Batched sell sent!\n🔗 https://solscan.io/tx/${txid}`
-      );
-    } catch (err) {
-      console.error("Batched sell error:", err);
-      await bot.sendMessage(
-        chatId,
-        `❌ Failed to send batched sell: ${err.message}`
-      );
-    }
-  }
 });
 
 // /delete command
@@ -1020,11 +730,185 @@ bot.onText(/^\/delete$/, (msg) => {
   bot.sendMessage(chatId, confirmMessage, options);
 });
 
-// Handle button response
-bot.on("callback_query", async (callbackQuery) => {
-  const data = callbackQuery.data;
-  const msg = callbackQuery.message;
-  const userId = callbackQuery.from.id.toString();
+const HELIUS_RPC = process.env.HELIUS_RPC 
+
+bot.on("callback_query", async (query) => {
+  const connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
+
+  const data = query.data;
+  const chatId = query.message.chat.id;
+  const userId = query.from.id.toString();
+
+  const [action, tokenAddress] = data.split("|");
+
+  console.log("Action:", action); // sell_50 or sell_100
+  console.log("Token Address:", tokenAddress); // The mint address
+
+  if (data.includes("sell_")) {
+    const panel = await Panel.findOne({ userId });
+    if (!panel) {
+      return bot.sendMessage(
+        chatId,
+        "❌ No panel found. Please use /start to set up your panel."
+      );
+    }
+
+    const inputMint = tokenAddress; // USDC
+    const outputMint = "So11111111111111111111111111111111111111112"; // wSOL
+    const slippageBps = 50;
+    const ONE_USD_AMOUNT = 1_000_000; // USDC = 6 decimals
+
+    const wallets = panel.wallets
+      .slice(0, 25)
+      .map((w) =>
+        solanaWeb3.Keypair.fromSecretKey(Buffer.from(w.privateKey, "hex"))
+      );
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < wallets.length; i += 5) {
+      const batch = wallets.slice(i, i + 5);
+
+      await bot.sendMessage(
+        chatId,
+        `🚀 Sending batch ${Math.floor(i / 5) + 1} of ${Math.ceil(
+          wallets.length / 5
+        )}...`
+      );
+
+      const results = await Promise.all(
+        batch.map(async (wallet) => {
+          try {
+            const tokenAccounts = await connection.getTokenAccountsByOwner(
+              wallet.publicKey,
+              {
+                mint: new solanaWeb3.PublicKey(inputMint),
+              }
+            );
+
+            if (tokenAccounts.value.length === 0) {
+              return { success: false, error: "No USDC balance", wallet };
+            }
+
+            const accountInfo = await connection.getTokenAccountBalance(
+              tokenAccounts.value[0].pubkey
+            );
+            const balance =
+              action === "sell_50"
+                ? Number(accountInfo.value.amount) * 0.5
+                : Number(accountInfo.value.amount);
+
+            // Quote from Jupiter
+            let quote;
+            try {
+              const resp = await axios.get(
+                "https://lite-api.jup.ag/swap/v1/quote",
+                {
+                  params: {
+                    inputMint,
+                    outputMint,
+                    amount: balance,
+                    slippageBps,
+                  },
+                  headers: { Accept: "application/json" },
+                }
+              );
+              quote = resp.data;
+            } catch (err) {
+              return { success: false, error: "Quote API error", wallet };
+            }
+
+            // Swap transaction from Jupiter
+            let swapResponse;
+            try {
+              const swapPayload = {
+                userPublicKey: wallet.publicKey.toBase58(),
+                quoteResponse: quote,
+                prioritizationFeeLamports: {
+                  priorityLevelWithMaxLamports: {
+                    maxLamports: 10000000,
+                    priorityLevel: "veryHigh",
+                  },
+                },
+                dynamicComputeUnitLimit: true,
+              };
+
+              const resp = await axios.post(
+                "https://lite-api.jup.ag/swap/v1/swap",
+                swapPayload,
+                {
+                  headers: {
+                    "Content-Type": "application/json",
+                    Accept: "application/json",
+                  },
+                }
+              );
+              swapResponse = resp.data;
+            } catch (err) {
+              return {
+                success: false,
+                error: `Swap API error: ${err.message}`,
+                wallet,
+              };
+            }
+
+            try {
+              const txBuffer = Buffer.from(
+                swapResponse.swapTransaction,
+                "base64"
+              );
+              const transaction =
+                solanaWeb3.VersionedTransaction.deserialize(txBuffer);
+
+              transaction.sign([wallet]);
+              const sig = await connection.sendTransaction(transaction);
+
+              return { success: true, sig, wallet };
+            } catch (err) {
+              return {
+                success: false,
+                error: `Tx send error: ${err.message}`,
+                wallet,
+              };
+            }
+          } catch (err) {
+            return {
+              success: false,
+              error: `Unexpected: ${err.message}`,
+              wallet,
+            };
+          }
+        })
+      );
+
+      for (const res of results) {
+        if (res.success) {
+          successCount++;
+          await bot.sendMessage(
+            chatId,
+            `✅ ${res.wallet.publicKey.toBase58()} swapped token to SOL.\n🔗 https://solscan.io/tx/${
+              res.sig
+            }`
+          );
+        } else {
+          failCount++;
+          await bot.sendMessage(
+            chatId,
+            `❌ ${res.wallet.publicKey.toBase58()} failed: ${res.error}`
+          );
+        }
+      }
+
+      await new Promise((res) => setTimeout(res, 500));
+    }
+
+    await bot.sendMessage(
+      chatId,
+      `🛒 Sell complete!\n✅ Success: ${successCount}\n❌ Failed: ${failCount}`
+    );
+  }
+  const msg = query.message;
 
   if (data === "confirm_delete") {
     try {
