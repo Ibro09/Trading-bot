@@ -444,8 +444,11 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
   function hexToKeypair(hex) {
     return Keypair.fromSecretKey(Uint8Array.from(Buffer.from(hex, "hex")));
   }
-  const wallets = Panel.wallets.privateKey.map(hexToKeypair);
-
+    const wallets = panel.wallets
+      .slice(0, 25)
+      .map((w) =>
+        solanaWeb3.Keypair.fromSecretKey(Buffer.from(w.privateKey, "hex"))
+      );
   async function getBalanceLamports(pubkey) {
     return await connection.getBalance(pubkey);
   }
