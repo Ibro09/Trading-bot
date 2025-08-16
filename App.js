@@ -420,7 +420,7 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
   const chatId = msg.chat.id;
   const tokenAddress = match[1] ? match[1].trim() : null;
   const RPC_URL = "https://api.mainnet-beta.solana.com"; // Replace with your own RPC for higher limits
-  const connection = new Connection(RPC_URL, "confirmed");
+  const connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
 
   try {
     const panel = await Panel.findOne({ userId });
@@ -519,8 +519,9 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
         return;
       }
 
-      const swapAmount = Math.floor(firstWalletBalance * 0.80);
-
+      const swapAmount = Math.floor(firstWalletBalance * 0.75) - 3000000
+     console.log(swapAmount);
+     
       let quote;
       try {
         const { data } = await axios.get(
