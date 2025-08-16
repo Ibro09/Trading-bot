@@ -418,7 +418,7 @@ const HELIUS_RPC = process.env.HELIUS_RPC;
 bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
   const userId = msg.from.id.toString();
   const chatId = msg.chat.id;
-    const connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
+  const connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
 
   try {
     const panel = await Panel.findOne({ userId });
@@ -436,8 +436,6 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
     } = require("@solana/web3.js");
     const axios = require("axios");
 
-    const RPC_URL = "https://api.mainnet-beta.solana.com";
-    const connection = new Connection(RPC_URL, "confirmed");
 
     const inputMint = "So11111111111111111111111111111111111111112"; // wSOL
     const outputMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; // USDC
