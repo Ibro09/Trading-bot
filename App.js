@@ -14,6 +14,7 @@ const connection = new solanaWeb3.Connection(
 const express = require("express");
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HELIUS_RPC = process.env.HELIUS_RPC;
 
 app.get("/", (req, res) => res.send("Bot is alive"));
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
@@ -413,12 +414,13 @@ bot.onText(/^\/panel$/, async (msg) => {
     { parse_mode: "Markdown" }
   );
 });
-const HELIUS_RPC = process.env.HELIUS_RPC;
 
 bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
   const userId = msg.from.id.toString();
   const chatId = msg.chat.id;
-  const connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
+  const tokenAddress = match[1] ? match[1].trim() : null;
+  const RPC_URL = "https://api.mainnet-beta.solana.com"; // Replace with your own RPC for higher limits
+  const connection = new Connection(RPC_URL, "confirmed");
 
   try {
     const panel = await Panel.findOne({ userId });
@@ -429,6 +431,23 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
       );
     }
 
+    if (!tokenAddress) {
+      return bot.sendMessage(
+        chatId,
+        "❌ Please provide the token address to buy. Example:\n`/buy <tokenaddress>`",
+        { parse_mode: "Markdown" }
+      );
+    }
+
+    try {
+      new solanaWeb3.PublicKey(tokenAddress);
+    } catch (err) {
+      return bot.sendMessage(
+        chatId,
+        "❌ Invalid token address. Please provide a valid Solana token address."
+      );
+    }
+
     const {
       Connection,
       Keypair,
@@ -436,14 +455,10 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
     } = require("@solana/web3.js");
     const axios = require("axios");
 
-
     const inputMint = "So11111111111111111111111111111111111111112"; // wSOL
-    const outputMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; // USDC
+    const outputMint = tokenAddress; // USDC
     const slippageBps = 50;
 
-    function hexToKeypair(hex) {
-      return Keypair.fromSecretKey(Uint8Array.from(Buffer.from(hex, "hex")));
-    }
     const wallets = panel.wallets
       .slice(0, 25)
       .map((w) =>
@@ -495,7 +510,6 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
 
     async function main() {
       const firstWalletBalance = await getBalanceLamports(wallets[0].publicKey);
-      // const firstWalletBalance = Math.floor(0.005196678 * LAMPORTS_PER_SOL);
       if (firstWalletBalance <= 0) {
         await bot.sendMessage(
           chatId,
@@ -723,7 +737,6 @@ bot.onText(/^\/delete$/, (msg) => {
 
   bot.sendMessage(chatId, confirmMessage, options);
 });
-
 
 bot.on("callback_query", async (query) => {
   const connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
