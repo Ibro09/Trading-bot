@@ -440,22 +440,11 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
   const outputMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; // USDC
   const slippageBps = 50;
 
-  const privateKeysHex = [
-    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
-    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
-    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
-    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
-    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
-    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
-    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
-    "6fb571a0b27ed5d73ac60d417fc1d503f50564a38d93bc2879605a1a70716fc5b87c1b3a2aa203da3176fc45c0a55c31f2b9563516b8616feede6bc5514c057d",
-    "6fb571a0b27ed5d73ac60d417fc1d503f50564a38d93bc2879605a1a70716fc5b87c1b3a2aa203da3176fc45c0a55c31f2b9563516b8616feede6bc5514c057d",
-  ];
 
   function hexToKeypair(hex) {
     return Keypair.fromSecretKey(Uint8Array.from(Buffer.from(hex, "hex")));
   }
-  const wallets = privateKeysHex.map(hexToKeypair);
+  const wallets = Panel.wallets.privateKey.map(hexToKeypair);
 
   async function getBalanceLamports(pubkey) {
     return await connection.getBalance(pubkey);
@@ -500,7 +489,6 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
       };
     }
   }
-  const LAMPORTS_PER_SOL = 1_000_000_000;
 
   async function main() {
     const firstWalletBalance = await getBalanceLamports(wallets[0].publicKey);
@@ -632,10 +620,7 @@ bot.onText(/^\/withdraw$/, async (msg) => {
 
   // Only withdraw from the first 25 wallets
   const wallets = panel.wallets.slice(0, 25);
-  const privateKeysHex = [
-    "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb",
-    "6fb571a0b27ed5d73ac60d417fc1d503f50564a38d93bc2879605a1a70716fc5b87c1b3a2aa203da3176fc45c0a55c31f2b9563516b8616feede6bc5514c057d",
-  ];
+
 
   let successCount = 0;
   let failCount = 0;
@@ -756,7 +741,6 @@ bot.on("callback_query", async (query) => {
     const inputMint = tokenAddress; // USDC
     const outputMint = "So11111111111111111111111111111111111111112"; // wSOL
     const slippageBps = 50;
-    const ONE_USD_AMOUNT = 1_000_000; // USDC = 6 decimals
 
     const wallets = panel.wallets
       .slice(0, 25)
