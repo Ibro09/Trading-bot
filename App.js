@@ -413,10 +413,13 @@ bot.onText(/^\/panel$/, async (msg) => {
     { parse_mode: "Markdown" }
   );
 });
+const HELIUS_RPC = process.env.HELIUS_RPC;
 
 bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
   const userId = msg.from.id.toString();
   const chatId = msg.chat.id;
+    const connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
+
   try {
     const panel = await Panel.findOne({ userId });
     if (!panel) {
@@ -723,7 +726,6 @@ bot.onText(/^\/delete$/, (msg) => {
   bot.sendMessage(chatId, confirmMessage, options);
 });
 
-const HELIUS_RPC = process.env.HELIUS_RPC;
 
 bot.on("callback_query", async (query) => {
   const connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
