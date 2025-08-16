@@ -499,6 +499,7 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
         transaction.sign([wallet]);
 
         const sig = await connection.sendTransaction(transaction);
+        
         return { success: true, sig };
       } catch (err) {
         return {
@@ -518,7 +519,7 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
         return;
       }
 
-      const swapAmount = Math.floor(firstWalletBalance * 0.85);
+      const swapAmount = Math.floor(firstWalletBalance * 0.80);
 
       let quote;
       try {
@@ -793,7 +794,7 @@ bot.on("callback_query", async (query) => {
             );
 
             if (tokenAccounts.value.length === 0) {
-              return { success: false, error: "No USDC balance", wallet };
+              return { success: false, error: "No token balance", wallet };
             }
 
             const accountInfo = await connection.getTokenAccountBalance(
