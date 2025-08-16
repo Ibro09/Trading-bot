@@ -493,14 +493,35 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
           }
         );
 
-        const txBuffer = Buffer.from(swapResponse.swapTransaction, "base64");
-        const transaction = VersionedTransaction.deserialize(txBuffer);
+        try {
+          const txBuffer = Buffer.from(swapResponse.swapTransaction, "base64");
+          const transaction =
+            solanaWeb3.VersionedTransaction.deserialize(txBuffer);
 
-        transaction.sign([wallet]);
+          transaction.sign([wallet]);
+          const sig = await connection.sendTransaction(transaction);
 
-        const sig = await connection.sendTransaction(transaction);
-        
-        return { success: true, sig };
+          // Confirm transaction and check for errors
+          const confirmation = await connection.confirmTransaction(
+            sig,
+            "finalized"
+          );
+          if (confirmation.value && confirmation.value.err) {
+            return {
+              success: false,
+              error: `Tx failed: ${JSON.stringify(confirmation.value.err)}`,
+              wallet,
+            };
+          }
+
+          return { success: true, sig, wallet };
+        } catch (err) {
+          return {
+            success: false,
+            error: `Tx send error: ${err.message}`,
+            wallet,
+          };
+        }
       } catch (err) {
         return {
           success: false,
@@ -510,60 +531,76 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
     }
 
     async function main() {
-      const firstWalletBalance = await getBalanceLamports(wallets[0].publicKey);
-      if (firstWalletBalance <= 0) {
-        await bot.sendMessage(
-          chatId,
-          "❌ First wallet has no balance. Cannot proceed."
-        );
-        return;
-      }
-
-      const swapAmount = Math.floor(firstWalletBalance * 0.75) - 3000000
-     console.log(swapAmount);
-     
-      let quote;
-      try {
-        const { data } = await axios.get(
-          "https://lite-api.jup.ag/swap/v1/quote",
-          {
-            params: { inputMint, outputMint, amount: swapAmount, slippageBps },
-            headers: { Accept: "application/json" },
-          }
-        );
-        quote = data;
-      } catch (err) {
-        await bot.sendMessage(
-          chatId,
-          `❌ Failed to get swap quote: ${err.message}`
-        );
-        return;
-      }
-
       let successCount = 0;
       let failCount = 0;
 
       // Process in batches of 5
       for (let i = 0; i < wallets.length; i += 5) {
         const batch = wallets.slice(i, i + 5);
+
         await bot.sendMessage(
           chatId,
           `🚀 Sending batch ${i / 5 + 1} of ${Math.ceil(wallets.length / 5)}...`
         );
 
         const results = await Promise.all(
-          batch.map((wallet) => swapForWallet(wallet, quote))
+          batch.map(async (wallet) => {
+            const balance = await getBalanceLamports(wallet.publicKey);
+
+            // Skip wallets with no balance
+            if (balance <= 5000000) {
+              return {
+                success: false,
+                error: "Insufficient balance (<= 0.005 SOL)",
+                wallet,
+              };
+            }
+
+            const swapAmount = Math.floor(balance - 5000000); // leave buffer for fees
+            console.log(swapAmount);
+            if (balance <= 5000000) {
+              return {
+                success: false,
+                error: "Insufficient amount for swap (<= 0.005 SOL)",
+                wallet,
+              };
+            }
+            // Fetch a fresh quote for THIS wallet
+            let quote;
+            try {
+              const resp = await axios.get(
+                "https://lite-api.jup.ag/swap/v1/quote",
+                {
+                  params: {
+                    inputMint,
+                    outputMint,
+                    amount: swapAmount,
+                    slippageBps,
+                  },
+                  headers: { Accept: "application/json" },
+                }
+              );
+              quote = resp.data;
+            } catch (err) {
+              return {
+                success: false,
+                error: `Quote failed: ${err.message}`,
+                wallet,
+              };
+            }
+
+            return await swapForWallet(wallet, quote);
+          })
         );
 
-        for (let j = 0; j < results.length; j++) {
-          const res = results[j];
-          const wallet = batch[j];
+        for (let res of results) {
+          const wallet = res.wallet || {};
 
           if (res.success) {
             successCount++;
             await bot.sendMessage(
               chatId,
-              `✅ ${wallet.publicKey.toBase58()} swapped: https://solscan.io/tx/${
+              `✅ ${wallet.publicKey?.toBase58()} swapped: https://solscan.io/tx/${
                 res.sig
               }`
             );
@@ -571,12 +608,12 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
             failCount++;
             await bot.sendMessage(
               chatId,
-              `❌ ${wallet.publicKey.toBase58()} failed: ${res.error}`
+              `❌ ${wallet.publicKey?.toBase58()} failed: ${res.error}`
             );
           }
         }
 
-        // Delay to avoid rate limits
+        // Delay to avoid RPC rate limits
         await new Promise((res) => setTimeout(res, 500));
       }
 
