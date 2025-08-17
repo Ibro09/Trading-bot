@@ -532,6 +532,7 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
 
         const results = await Promise.all(
           batch.map(async (wallet) => {
+            const rentExempt = await connection.getMinimumBalanceForRentExemption(0);
             const balance = await getBalanceLamports(wallet.publicKey);
 
             // Skip wallets with no balance
@@ -543,7 +544,7 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
               };
             }
 
-            const swapAmount = Math.floor(balance - 5000000); // leave buffer for fees
+            const swapAmount = Math.floor((balance * 0.9 ) - 6000000 -(rentExempt * 4)); // leave buffer for fees
             console.log(swapAmount);
             if (swapAmount <= 1000000) {
               return {
@@ -575,7 +576,6 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
                 wallet,
               };
             }
-
             return await swapForWallet(wallet, quote);
           })
         );
