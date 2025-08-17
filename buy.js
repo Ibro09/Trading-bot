@@ -10,9 +10,7 @@ const slippageBps = 50; // 0.5%
 
 // 25 wallets (example hex private keys — replace with yours)
 const privateKeysHex = [
-   "6fb571a0b27ed5d73ac60d417fc1d503f50564a38d93bc2879605a1a70716fc5b87c1b3a2aa203da3176fc45c0a55c31f2b9563516b8616feede6bc5514c057d",
-   "096e34a82a8352d57341c34f9d72acf482e14628a01b1cbe52d76f56a7c6e025b01b882dfe75ecad1587d584acf52079cc30c7d945b840355e2ee30eed9326eb"
-  ];
+];
 
 function hexToKeypair(hex) {
   return Keypair.fromSecretKey(Uint8Array.from(Buffer.from(hex, "hex")));
