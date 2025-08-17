@@ -501,19 +501,6 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
           transaction.sign([wallet]);
           const sig = await connection.sendTransaction(transaction);
 
-          // Confirm transaction and check for errors
-          const confirmation = await connection.confirmTransaction(
-            sig,
-            "finalized"
-          );
-          if (confirmation.value && confirmation.value.err) {
-            return {
-              success: false,
-              error: `Tx failed: ${JSON.stringify(confirmation.value.err)}`,
-              wallet,
-            };
-          }
-
           return { success: true, sig, wallet };
         } catch (err) {
           return {
@@ -558,10 +545,10 @@ bot.onText(/^\/buy\s+(.+)$/, async (msg, match) => {
 
             const swapAmount = Math.floor(balance - 5000000); // leave buffer for fees
             console.log(swapAmount);
-            if (balance <= 5000000) {
+            if (swapAmount <= 1000000) {
               return {
                 success: false,
-                error: "Insufficient amount for swap (<= 0.005 SOL)",
+                error: "Insufficient amount for swap (<= 0.001 SOL)",
                 wallet,
               };
             }
